@@ -1,160 +1,181 @@
 # FastAPI Blog Generator
 
-A FastAPI-based blog generation service that uses the ReAct (Reasoning and Acting) framework with LangChain and Claude AI to create comprehensive blog posts with images.
+An AI-powered blog generation service using FastAPI, LangChain, and ReAct agents.
 
 ## Features
 
-- **ReAct Framework**: Uses Thought → Action → Observation pattern for intelligent blog generation
-- **Real-time Streaming**: Stream the blog generation process in real-time via Server-Sent Events
-- **Image Integration**: Automatically includes relevant images in blog posts
-- **Multiple Output Formats**: Supports both Markdown and HTML output
-- **Search Integration**: Uses Tavily search for gathering current information
-- **Comprehensive Sections**: Generates multi-section blog posts with proper structure
+- AI-powered blog generation with multiple LLM providers (OpenAI, Anthropic, Local Ollama)
+- Web search integration via Tavily API
+- ReAct (Reasoning + Acting) agent for intelligent content creation
+- Fallback knowledge base when search APIs are unavailable
+- RESTful API with FastAPI
 
-## Prerequisites
+## Quick Start
 
-- Python 3.8+
-- Claude API key (Anthropic)
-- Tavily API key (for search functionality)
+### Option 1: Docker (Recommended)
 
-## Installation
+1. **Clone and navigate to the project:**
+   ```bash
+   cd fastapi_blog
+   ```
 
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd fastapi_blog
-```
+2. **Set up environment variables:**
+   Create a `.env` file:
+   ```bash
+   # Required: Get from https://tavily.com
+   TAVILY_API_KEY=your_tavily_api_key_here
+   
+   # Optional: For better AI responses
+   ANTHROPIC_API_KEY=your_anthropic_key_here
+   OPENAI_API_KEY=your_openai_key_here
+   ```
 
-2. Create a virtual environment:
-```bash
-python -m venv fastapienv
-source fastapienv/bin/activate  # On Windows: fastapienv\Scripts\activate
-```
+3. **Run with Docker:**
+   ```bash
+   docker-compose up --build
+   ```
 
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+### Option 2: Local Development
 
-4. Set up environment variables:
-```bash
-# Copy the example environment file
-cp env.example .env
+1. **Create virtual environment:**
+   ```bash
+   python3 -m venv fastapienv
+   source fastapienv/bin/activate  # On Windows: fastapienv\Scripts\activate
+   ```
 
-# Edit .env with your actual API keys
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-```
+3. **Set up environment variables:**
+   Create a `.env` file with your API keys (see above)
 
-**Note**: Never commit your actual API keys to version control. Use the `env.example` file as a template.
+4. **Run the server:**
+   ```bash
+   uvicorn blog_fastapi:app --host 0.0.0.0 --port 7999 --reload
+   ```
 
-## Usage
+## API Usage
 
-### Starting the Server
+### Generate Blog Post
 
-```bash
-uvicorn blog_fastapi:app --reload --host 0.0.0.0 --port 8000
-```
+**POST** `http://localhost:7999/blog`
 
-### API Endpoints
-
-#### Generate Blog (Synchronous)
-```bash
-POST /blog
-Content-Type: application/json
-
+```json
 {
-    "topic": "The Future of Artificial Intelligence",
-    "html_mode": false
+  "topic": "Artificial Intelligence in Healthcare",
+  "llm_provider": "local",
+  "model_name": "llama3.2",
+  "num_sections": 3,
+  "target_audience": "general",
+  "tone": "informative"
 }
 ```
 
-#### Generate Blog (Streaming)
-```bash
-POST /blog/stream
-Content-Type: application/json
-
+**Response:**
+```json
 {
-    "topic": "The Future of Artificial Intelligence",
-    "html_mode": true
+  "blog_content": "# Artificial Intelligence in Healthcare\n\n...",
+  "status": "success"
 }
 ```
 
-### Example Usage
+### Parameters
 
-```python
-import requests
+- `topic` (required): The blog topic
+- `llm_provider`: "openai", "anthropic", or "local" (default: "local")
+- `model_name`: Model to use (default: "llama3.2")
+- `num_sections`: Number of sections (default: 3)
+- `target_audience`: Target audience (default: "general")
+- `tone`: Writing tone (default: "informative")
 
-# Synchronous generation
-response = requests.post("http://localhost:8000/blog", json={
-    "topic": "Climate Change Solutions",
-    "html_mode": False
-})
+## API Keys Setup
 
-blog_data = response.json()
-print(blog_data["blog"])
-```
+### 1. Tavily API Key (Required for web search)
+- Visit [tavily.com](https://tavily.com)
+- Sign up and get your API key
+- Add to `.env`: `TAVILY_API_KEY=your_key_here`
 
-## ReAct Framework Actions
+### 2. Anthropic API Key (Optional)
+- Visit [console.anthropic.com](https://console.anthropic.com)
+- Get your API key
+- Add to `.env`: `ANTHROPIC_API_KEY=your_key_here`
 
-The system uses the following actions in its reasoning process:
+### 3. OpenAI API Key (Optional)
+- Visit [platform.openai.com](https://platform.openai.com)
+- Get your API key
+- Add to `.env`: `OPENAI_API_KEY=your_key_here`
 
-- **SEARCH**: Search for information about a topic
-- **IMAGE_SEARCH**: Find relevant images for the blog post
-- **ANALYZE**: Analyze gathered information to extract key points
-- **WRITE_SECTION**: Write a specific section of the blog
-- **COMPILE_BLOG**: Combine all sections into the final blog
-- **FINISH**: Complete the task
+## Local LLM Setup (Ollama)
 
-## Project Structure
+For local LLM support:
 
-```
-fastapi_blog/
-├── blog_fastapi.py          # Main FastAPI application
-├── requirements.txt         # Python dependencies
-├── Dockerfile              # Docker configuration
-├── test_*.py               # Test files
-├── README.md               # This file
-└── .gitignore             # Git ignore rules
-```
+1. **Install Ollama:**
+   ```bash
+   curl -fsSL https://ollama.ai/install.sh | sh
+   ```
 
-## Docker Support
+2. **Pull a model:**
+   ```bash
+   ollama pull llama3.2
+   ```
 
-Build and run with Docker:
+3. **Start Ollama service:**
+   ```bash
+   ollama serve
+   ```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **"Connection refused" error:**
+   - Ensure the server is running on port 7999
+   - Check if another service is using the port
+
+2. **"Invalid API key" errors:**
+   - Verify your API keys in the `.env` file
+   - Check if keys have expired
+
+3. **"Module not found" errors:**
+   - Ensure virtual environment is activated
+   - Run `pip install -r requirements.txt`
+
+4. **Timeout errors:**
+   - Local LLMs may be slow; increase timeout
+   - Consider using cloud APIs for faster responses
+
+### Testing the API
 
 ```bash
-docker build -t fastapi-blog .
-docker run -p 8000:8000 -e CLAUDE_API_KEY=your-key -e TAVILY_API_KEY=your-key fastapi-blog
+curl -X POST "http://localhost:7999/blog" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer token" \
+  -d '{
+    "topic": "Test Topic",
+    "llm_provider": "local",
+    "model_name": "llama3.2",
+    "num_sections": 1
+  }'
 ```
 
-## Testing
+## Architecture
 
-Run the test suite:
-
-```bash
-python -m pytest test_*.py -v
-```
-
-## API Documentation
-
-Once the server is running, visit:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
-## Environment Variables
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `CLAUDE_API_KEY` | Anthropic Claude API key | Yes |
-| `TAVILY_API_KEY` | Tavily search API key | Yes |
+- **FastAPI**: Web framework and API server
+- **LangChain**: LLM orchestration and chaining
+- **LangGraph**: State management for ReAct agents
+- **Tavily**: Web search API
+- **Ollama**: Local LLM inference
 
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Add tests if applicable
+4. Test thoroughly
 5. Submit a pull request
 
 ## License
 
-This project is licensed under the MIT License. 
+MIT License - see LICENSE file for details. 

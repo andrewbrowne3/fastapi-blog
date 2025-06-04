@@ -415,17 +415,18 @@ def generate_fallback_search_results(query: str) -> str:
     
     return "\n".join(formatted_results)
 
-def generate_react_step(topic: str, context: str, progress_message: str, llm) -> tuple:
+def generate_react_step(topic: str, context: str, progress_message: str, llm, target_audience: str = "general audience", tone: str = "professional", num_sections: int = 3) -> tuple:
     """Generate a single ReAct step (thought, action, action_input)"""
     
-    # Create the ReAct chain
+    # Create the chain and invoke it
     react_chain = react_template | llm | StrOutputParser()
-    
-    # Generate the response
     response = react_chain.invoke({
         "topic": topic,
         "context": context,
-        "progress": progress_message
+        "progress": progress_message,
+        "target_audience": target_audience,
+        "tone": tone,
+        "num_sections": num_sections
     })
     
     # Parse the response to extract thought, action, and input
@@ -466,8 +467,11 @@ def react_agent(state: ReActState) -> ReActState:
     # Build context from previous steps
     context = build_react_context(state)
     
-    # Generate thought, action, and action_input
-    thought, action, action_input = generate_react_step(state.topic, context, progress_message, llm)
+    # Generate the next step
+    thought, action, action_input = generate_react_step(
+        state.topic, context, progress_message, llm,
+        state.target_audience, state.tone, state.num_sections
+    )
     
     # Store the step (observation will be added after execution)
     step = {
@@ -490,6 +494,17 @@ def react_agent(state: ReActState) -> ReActState:
     # Check if task is finished
     if action == "FINISH":
         state.is_complete = True
+    
+    # Force completion if we're approaching max steps and have some content
+    if state.current_step >= state.max_steps - 10:
+        written_sections = len([step for step in state.react_trace if step.get('action') == 'WRITE_SECTION'])
+        if written_sections >= 1:  # If we have at least one section
+            # Force compile and finish
+            if not state.final_blog:
+                # Quick compile of existing sections
+                sections = [step.get('observation', '') for step in state.react_trace if step.get('action') == 'WRITE_SECTION']
+                state.final_blog = f"# {state.topic}\n\n" + "\n\n".join(sections)
+            state.is_complete = True
     
     return state
 
@@ -776,6 +791,12 @@ def get_found_images(state: ReActState) -> str:
 
 def should_continue(state: ReActState) -> str:
     """Determine if ReAct loop should continue"""
+    # Force completion if we're near the max steps
+    if state.current_step >= state.max_steps - 5:
+        # Force completion by setting is_complete
+        state.is_complete = True
+        return END
+    
     if state.is_complete or state.current_step >= state.max_steps:
         return END
     return "react_agent"
@@ -809,28 +830,43 @@ graph = create_blog_graph()
 @app.post("/blog")
 def generate_blog(request: BlogRequest):
     """Generate a blog using ReAct pattern with full state persistence"""
-    start_time = time.time()
-    
-    # Generate or use provided thread_id
-    thread_id = request.thread_id or f"blog-{uuid.uuid4()}"
-    
-    # Create configuration for this thread
-    config = {
-        "configurable": {
-            "thread_id": thread_id
-        },
-        "recursion_limit": 50  # Increase from default 25 to 50
-    }
-    
-    # Check if we're resuming an existing thread
     try:
-        existing_state = graph.get_state(config)
-        if existing_state.values:
-            # Resume from existing state
-            initial_state = ReActState(**existing_state.values)
-            print(f"Resuming thread {thread_id} from step {initial_state.current_step}")
-        else:
-            # Start new thread
+        start_time = time.time()
+        
+        # Generate or use provided thread_id
+        thread_id = request.thread_id or f"blog-{uuid.uuid4()}"
+        
+        # Create configuration for this thread
+        config = {
+            "configurable": {
+                "thread_id": thread_id
+            },
+            "recursion_limit": 100  # Increase from 50 to 100
+        }
+        
+        # Check if we're resuming an existing thread
+        try:
+            existing_state = graph.get_state(config)
+            if existing_state.values:
+                # Resume from existing state
+                initial_state = ReActState(**existing_state.values)
+                print(f"Resuming thread {thread_id} from step {initial_state.current_step}")
+            else:
+                # Start new thread
+                initial_state = ReActState(
+                    topic=request.topic,
+                    html_mode=request.html_mode,
+                    thread_id=thread_id,
+                    llm_provider=request.llm_provider,
+                    model_name=request.model_name,
+                    num_sections=request.num_sections,
+                    target_audience=request.target_audience,
+                    tone=request.tone
+                )
+                print(f"Starting new thread {thread_id}")
+        except Exception as e:
+            print(f"Error getting state: {e}")
+            # Start new thread if no existing state
             initial_state = ReActState(
                 topic=request.topic,
                 html_mode=request.html_mode,
@@ -842,42 +878,37 @@ def generate_blog(request: BlogRequest):
                 tone=request.tone
             )
             print(f"Starting new thread {thread_id}")
-    except:
-        # Start new thread if no existing state
-        initial_state = ReActState(
-            topic=request.topic,
-            html_mode=request.html_mode,
-            thread_id=thread_id,
-            llm_provider=request.llm_provider,
-            model_name=request.model_name,
-            num_sections=request.num_sections,
-            target_audience=request.target_audience,
-            tone=request.tone
-        )
-        print(f"Starting new thread {thread_id}")
-    
-    # Run the graph
-    final_result = graph.invoke(initial_state, config)
-    
-    # Convert the result to ReActState if it's not already
-    if isinstance(final_result, dict):
-        final_state = ReActState(**final_result)
-    else:
-        final_state = final_result
-    
-    processing_time = time.time() - start_time
-    
-    return {
-        "blog": final_state.final_blog,
-        "thread_id": thread_id,
-        "steps_completed": final_state.current_step,
-        "react_trace": final_state.react_trace,
-        "processing_time": f"{processing_time:.2f} seconds",
-        "is_complete": final_state.is_complete,
-        "format": "HTML" if request.html_mode else "Markdown",
-        "target_audience": final_state.target_audience,
-        "tone": final_state.tone
-    }
+        
+        # Run the graph
+        print(f"About to invoke graph with state: {initial_state.topic}")
+        final_result = graph.invoke(initial_state, config)
+        print(f"Graph invocation completed")
+        
+        # Convert the result to ReActState if it's not already
+        if isinstance(final_result, dict):
+            final_state = ReActState(**final_result)
+        else:
+            final_state = final_result
+        
+        processing_time = time.time() - start_time
+        
+        return {
+            "blog": final_state.final_blog,
+            "thread_id": thread_id,
+            "steps_completed": final_state.current_step,
+            "react_trace": final_state.react_trace,
+            "processing_time": f"{processing_time:.2f} seconds",
+            "is_complete": final_state.is_complete,
+            "format": "HTML" if request.html_mode else "Markdown",
+            "target_audience": final_state.target_audience,
+            "tone": final_state.tone
+        }
+    except Exception as e:
+        print(f"ERROR in generate_blog: {str(e)}")
+        print(f"ERROR type: {type(e)}")
+        import traceback
+        print(f"ERROR traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Blog generation failed: {str(e)}")
 
 @app.post("/blog/stream")
 async def generate_blog_stream(request: BlogRequest):
@@ -894,7 +925,7 @@ async def generate_blog_stream(request: BlogRequest):
             "configurable": {
                 "thread_id": thread_id
             },
-            "recursion_limit": 50  # Increase from default 25 to 50
+            "recursion_limit": 100  # Increase from 50 to 100
         }
         
         # Check if we're resuming an existing thread
@@ -1006,7 +1037,7 @@ def resume_blog_generation(thread_id: str):
         "configurable": {
             "thread_id": thread_id
         },
-        "recursion_limit": 50  # Increase from default 25 to 50
+        "recursion_limit": 100  # Increase from 50 to 100
     }
     
     try:
