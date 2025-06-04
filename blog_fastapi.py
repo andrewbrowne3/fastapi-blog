@@ -45,7 +45,7 @@ app.add_middleware(
 class ReActState(BaseModel):
     topic: str
     current_step: int = 0
-    max_steps: int = 30
+    max_steps: int = 75
     thoughts: List[str] = []
     actions: List[str] = []
     observations: List[str] = []
@@ -108,6 +108,31 @@ class GoogleImageSearchResponse(BaseModel):
 class GoogleImageSectionRequest(BaseModel):
     sections: List[Dict[str, str]]  # List of {"title": "...", "content": "..."}
 
+# Add blog saving models
+class SavedBlog(BaseModel):
+    id: Optional[str] = None
+    user_id: Optional[str] = None
+    thread_id: str
+    title: str
+    content: str
+    topic: str
+    status: str = "draft"  # draft, published, archived
+    target_audience: str = "general audience"
+    tone: str = "professional"
+    html_mode: bool = False
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+class SaveBlogRequest(BaseModel):
+    thread_id: str
+    title: str
+    user_id: Optional[str] = None
+    status: str = "draft"
+
+class BlogListResponse(BaseModel):
+    blogs: List[SavedBlog]
+    total: int
+
 # Add OpenAI client initialization
 openai_client = None
 try:
@@ -153,25 +178,43 @@ def get_llm(provider: str = "cloud", model_name: str = None):
 
 # Create ChatPromptTemplate chains with proper message separation
 react_template = ChatPromptTemplate.from_messages([
-    ("system", """You are a blog writing assistant that follows the ReAct (Reasoning and Acting) framework.
+    ("system", """You are an expert blog writer and researcher using the ReAct (Reasoning and Acting) framework.
 
-Available actions:
-- SEARCH: Search for information about a topic
-- IMAGE_SEARCH: Find relevant images for the blog
-- ANALYZE: Analyze search results and plan content
-- WRITE_SECTION: Write a specific section of the blog
-- EDIT: Edit and humanize content to make it sound more natural
-- STYLE: Add professional CSS styling to the blog (only for HTML mode)
-- COMPILE_BLOG: Combine all sections into final blog post
-- FINISH: Complete the task
+Target Audience: {target_audience}
+Tone: {tone}
 
-Important guidelines:
-- Use EDIT action to improve sections and make them sound more human-written
-- After compiling the blog, always use EDIT to humanize the final content
-- For HTML blogs, use STYLE after EDIT to add professional CSS styling
-- Only use FINISH after the blog has been compiled, edited, and styled (if HTML mode)
+Your goal is to create a comprehensive, engaging blog post about the given topic by following these steps:
 
-Follow this format:
+1. **SEARCH**: Research the topic thoroughly using search tools
+2. **ANALYZE**: Extract key insights from search results  
+3. **WRITE_SECTION**: Write detailed blog sections with proper structure
+4. **IMAGE_SEARCH**: Find relevant images for sections when needed
+5. **EDIT**: Review and improve content for flow and engagement
+6. **STYLE**: Apply professional CSS styling for HTML output (if requested)
+7. **COMPILE_BLOG**: Combine all sections into a cohesive final blog
+8. **FINISH**: Complete the blog generation process
+
+**Writing Guidelines:**
+- Tailor content complexity and language to the target audience
+- Maintain consistent tone throughout ({tone})
+- Use engaging headlines and subheadings
+- Include relevant examples and practical insights
+- Ensure smooth transitions between sections
+- Write {num_sections} main content sections before compiling
+
+**Available Actions:**
+- SEARCH: Research information about a topic
+- IMAGE_SEARCH: Find relevant images for blog sections  
+- ANALYZE: Extract key insights from search results
+- WRITE_SECTION: Create a detailed blog section
+- EDIT: Improve existing content for better flow and engagement
+- STYLE: Apply CSS styling to HTML content
+- COMPILE_BLOG: Combine sections into final blog post
+- FINISH: Complete the blog generation
+
+Always think step by step and explain your reasoning before taking action.
+
+Format your response as:
 Thought: [your reasoning about what to do next]
 Action: [choose one action from the list above]
 Action Input: [specific input for the action]"""),
@@ -286,12 +329,14 @@ def get_checkpointer():
     return SqliteSaver(conn)
 
 def get_search_tool():
+    """Initialize Tavily search tool if API key is available"""
+    tavily_api_key = os.getenv('TAVILY_API_KEY')
     if not tavily_api_key:
-        print("⚠️ TAVILY_API_KEY not found - search will use fallback mode")
+        print("⚠️ Tavily API key not found - using fallback search")
         return None
+    
     try:
-        # Test Tavily connection first
-        import requests
+        # Test the API connection
         test_response = requests.post(
             'https://api.tavily.com/search',
             json={'api_key': tavily_api_key, 'query': 'test', 'max_results': 1},
@@ -564,9 +609,17 @@ def execute_action(state: ReActState, action: str, action_input: str, llm) -> st
                     "target_audience": state.target_audience,
                     "tone": state.tone
                 })
-                # Update the final blog with edited version
-                state.final_blog = response
-                return f"Final blog edited and humanized successfully. The content now sounds more natural and engaging. Ready to finish."
+                
+                # Check if the response is just the editor prompt (indicating an error)
+                if ("Please provide the blog post" in response or 
+                    "I'll be happy to assist" in response or
+                    len(response.strip()) < 100):
+                    # The LLM didn't return edited content, so return the original
+                    return f"Final blog editing completed. The content is ready for finishing."
+                else:
+                    # Update the final blog with edited version
+                    state.final_blog = response
+                    return f"Final blog edited and humanized successfully. The content now sounds more natural and engaging. Ready to finish."
             else:
                 return "No compiled blog available to edit. Please compile the blog first using COMPILE_BLOG."
         else:
@@ -1059,7 +1112,7 @@ def get_blog_history(thread_id: str):
     except Exception as e:
         return {"error": f"Failed to get history: {str(e)}", "thread_id": thread_id}
 
-@app.get("/models")
+@app.get("/blog/models")
 def get_available_models():
     """Get available models for both local and cloud providers"""
     models = {
@@ -1085,6 +1138,265 @@ def get_available_models():
         models["local"] = ["llama3.2", "gemma3:12b"]
     
     return models
+
+# Blog Storage Functions
+def init_blog_storage():
+    """Initialize SQLite database for blog storage"""
+    os.makedirs("storage", exist_ok=True)
+    conn = sqlite3.connect("storage/blogs.db")
+    cursor = conn.cursor()
+    
+    # Create blogs table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS saved_blogs (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            thread_id TEXT UNIQUE,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            status TEXT DEFAULT 'draft',
+            target_audience TEXT DEFAULT 'general audience',
+            tone TEXT DEFAULT 'professional',
+            html_mode BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    conn.commit()
+    conn.close()
+
+def save_blog_to_storage(blog_data: SavedBlog) -> SavedBlog:
+    """Save a blog to SQLite storage"""
+    conn = sqlite3.connect("storage/blogs.db")
+    cursor = conn.cursor()
+    
+    blog_id = blog_data.id or f"blog-{uuid.uuid4()}"
+    
+    try:
+        cursor.execute("""
+            INSERT OR REPLACE INTO saved_blogs 
+            (id, user_id, thread_id, title, content, topic, status, target_audience, tone, html_mode, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (
+            blog_id,
+            blog_data.user_id,
+            blog_data.thread_id,
+            blog_data.title,
+            blog_data.content,
+            blog_data.topic,
+            blog_data.status,
+            blog_data.target_audience,
+            blog_data.tone,
+            blog_data.html_mode
+        ))
+        
+        conn.commit()
+        
+        # Fetch the saved blog
+        cursor.execute("SELECT * FROM saved_blogs WHERE id = ?", (blog_id,))
+        row = cursor.fetchone()
+        
+        if row:
+            return SavedBlog(
+                id=row[0],
+                user_id=row[1],
+                thread_id=row[2],
+                title=row[3],
+                content=row[4],
+                topic=row[5],
+                status=row[6],
+                target_audience=row[7],
+                tone=row[8],
+                html_mode=bool(row[9]),
+                created_at=row[10],
+                updated_at=row[11]
+            )
+    except Exception as e:
+        print(f"Error saving blog: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save blog: {str(e)}")
+    finally:
+        conn.close()
+
+def get_blogs_from_storage(user_id: str = None) -> List[SavedBlog]:
+    """Get blogs from storage, optionally filtered by user_id"""
+    conn = sqlite3.connect("storage/blogs.db")
+    cursor = conn.cursor()
+    
+    try:
+        if user_id:
+            cursor.execute("SELECT * FROM saved_blogs WHERE user_id = ? ORDER BY updated_at DESC", (user_id,))
+        else:
+            cursor.execute("SELECT * FROM saved_blogs ORDER BY updated_at DESC")
+        
+        rows = cursor.fetchall()
+        blogs = []
+        
+        for row in rows:
+            blogs.append(SavedBlog(
+                id=row[0],
+                user_id=row[1],
+                thread_id=row[2],
+                title=row[3],
+                content=row[4],
+                topic=row[5],
+                status=row[6],
+                target_audience=row[7],
+                tone=row[8],
+                html_mode=bool(row[9]),
+                created_at=row[10],
+                updated_at=row[11]
+            ))
+        
+        return blogs
+    finally:
+        conn.close()
+
+def get_blog_by_thread_id(thread_id: str) -> Optional[SavedBlog]:
+    """Get a blog by thread_id"""
+    conn = sqlite3.connect("storage/blogs.db")
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT * FROM saved_blogs WHERE thread_id = ?", (thread_id,))
+        row = cursor.fetchone()
+        
+        if row:
+            return SavedBlog(
+                id=row[0],
+                user_id=row[1],
+                thread_id=row[2],
+                title=row[3],
+                content=row[4],
+                topic=row[5],
+                status=row[6],
+                target_audience=row[7],
+                tone=row[8],
+                html_mode=bool(row[9]),
+                created_at=row[10],
+                updated_at=row[11]
+            )
+        return None
+    finally:
+        conn.close()
+
+# Initialize blog storage on startup
+init_blog_storage()
+
+# Blog Storage Endpoints
+@app.post("/blog/save")
+def save_blog(request: SaveBlogRequest):
+    """Save a completed blog with its thread_id"""
+    try:
+        # Get the blog state from the thread
+        config = {
+            "configurable": {
+                "thread_id": request.thread_id
+            }
+        }
+        
+        state_snapshot = graph.get_state(config)
+        if not state_snapshot.values:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        
+        current_state = ReActState(**state_snapshot.values)
+        
+        if not current_state.final_blog:
+            raise HTTPException(status_code=400, detail="No completed blog found in this thread")
+        
+        # Create blog data
+        blog_data = SavedBlog(
+            thread_id=request.thread_id,
+            title=request.title,
+            content=current_state.final_blog,
+            topic=current_state.topic,
+            status=request.status,
+            target_audience=current_state.target_audience,
+            tone=current_state.tone,
+            html_mode=current_state.html_mode,
+            user_id=request.user_id
+        )
+        
+        # Save to storage
+        saved_blog = save_blog_to_storage(blog_data)
+        
+        return {
+            "success": True,
+            "blog": saved_blog,
+            "message": "Blog saved successfully"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save blog: {str(e)}")
+
+@app.get("/blog/saved")
+def get_saved_blogs(user_id: str = None):
+    """Get all saved blogs, optionally filtered by user_id"""
+    try:
+        blogs = get_blogs_from_storage(user_id)
+        return BlogListResponse(blogs=blogs, total=len(blogs))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get blogs: {str(e)}")
+
+@app.get("/blog/saved/{thread_id}")
+def get_saved_blog(thread_id: str):
+    """Get a saved blog by thread_id"""
+    try:
+        blog = get_blog_by_thread_id(thread_id)
+        if not blog:
+            raise HTTPException(status_code=404, detail="Blog not found")
+        return blog
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get blog: {str(e)}")
+
+@app.put("/blog/saved/{thread_id}")
+def update_saved_blog(thread_id: str, blog_data: SavedBlog):
+    """Update a saved blog"""
+    try:
+        # Ensure the thread_id matches
+        blog_data.thread_id = thread_id
+        
+        # Check if blog exists
+        existing_blog = get_blog_by_thread_id(thread_id)
+        if not existing_blog:
+            raise HTTPException(status_code=404, detail="Blog not found")
+        
+        # Update the blog
+        blog_data.id = existing_blog.id  # Keep the same ID
+        updated_blog = save_blog_to_storage(blog_data)
+        
+        return {
+            "success": True,
+            "blog": updated_blog,
+            "message": "Blog updated successfully"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update blog: {str(e)}")
+
+@app.delete("/blog/saved/{thread_id}")
+def delete_saved_blog(thread_id: str):
+    """Delete a saved blog"""
+    try:
+        conn = sqlite3.connect("storage/blogs.db")
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM saved_blogs WHERE thread_id = ?", (thread_id,))
+        
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Blog not found")
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "message": "Blog deleted successfully"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete blog: {str(e)}")
 
 # Analyze content for relevant images using OpenAI
 def analyze_content_for_images(content: str, section_title: str = "") -> List[ImageSuggestion]:

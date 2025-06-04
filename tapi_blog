@@ -1,0 +1,6 @@
+         List of relations
+ Schema | Name  | Type  |   Owner   
+--------+-------+-------+-----------
+ public | users | table | asbrowne1
+(1 row)
+

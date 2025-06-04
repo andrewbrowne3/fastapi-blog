@@ -1,0 +1,461 @@
+# Redirect HTTP to HTTPS for blog.andrewbrowne.org
+server {
+    listen 80;
+    server_name blog.andrewbrowne.org;
+    return 301 https://$host$request_uri;
+}
+
+# HTTPS server block for blog.andrewbrowne.org
+server {
+    listen 443 ssl;
+    server_name blog.andrewbrowne.org;
+
+    ssl_certificate /etc/letsencrypt/live/blog.andrewbrowne.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/blog.andrewbrowne.org/privkey.pem;
+
+    root /var/www/Blog-Generator;
+    index index.html index.htm;
+
+    # Frontend
+    location / {
+        try_files $uri $uri/ /index.html;
+
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    }
+
+    # Static asset caching
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+
+# Backend API - Proxy to FastAPI
+location /api/ {
+    proxy_pass http://localhost:4000/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection 'upgrade';
+    proxy_cache_bypass $http_upgrade;
+
+    # Extended timeouts for streaming (30 minutes)
+    proxy_connect_timeout 1800s;
+    proxy_send_timeout 1800s;
+    proxy_read_timeout 1800s;
+    send_timeout 1800s;
+    
+    # Disable buffering for streaming
+    proxy_buffering off;
+    proxy_cache off;
+
+    # CORS headers
+    add_header Access-Control-Allow-Origin *;
+    add_header Access-Control-Allow-Methods "GET, POST, OPTIONS";
+    add_header Access-Control-Allow-Headers "Content-Type, Authorization";
+
+    if ($request_method = 'OPTIONS') {
+        add_header Access-Control-Allow-Origin *;
+        add_header Access-Control-Allow-Methods "GET, POST, OPTIONS";
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization";
+        add_header Access-Control-Max-Age 1728000;
+        add_header Content-Type 'text/plain; charset=utf-8';
+        add_header Content-Length 0;
+        return 204;
+    }
+}
+}
+
+# worldmap.andrewslearning.com
+server {
+    listen 80;
+    server_name worldmap.andrewslearning.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name worldmap.andrewslearning.com;
+
+    ssl_certificate /etc/letsencrypt/live/worldmap.andrewslearning.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/worldmap.andrewslearning.com/privkey.pem;
+
+    root /var/www/worldmap;
+    index index.html;
+
+    location / {
+        try_files $uri /index.html;
+    }
+}
+
+# caseinformation.andrewbrowne.org
+server {
+    listen 80;
+    server_name caseinformation.andrewbrowne.org;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name caseinformation.andrewbrowne.org;
+
+    ssl_certificate /etc/letsencrypt/live/caseinformation.andrewbrowne.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/caseinformation.andrewbrowne.org/privkey.pem;
+
+    root /var/www/lawpagecms;
+    index index.html;
+
+    location / {
+        try_files $uri /index.html;
+    }
+}
+
+# andrewslearning.com and www redirect
+server {
+    listen 80;
+    server_name andrewslearning.com www.andrewslearning.com;
+    return 301 https://andrewslearning.com$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name www.andrewslearning.com;
+    ssl_certificate /etc/letsencrypt/live/www.andrewslearning.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/www.andrewslearning.com/privkey.pem;
+    return 301 https://andrewslearning.com$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name andrewslearning.com;
+
+    ssl_certificate /etc/letsencrypt/live/andrewslearning.com-0001/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/andrewslearning.com-0001/privkey.pem;
+
+    root /var/www/136.55.166.151;
+    index index.html;
+
+    add_header Content-Security-Policy "default-src https: data: 'unsafe-inline' 'unsafe-eval'; connect-src https: wss://api.andrewslearning.com;" always;
+
+    location ~* \.(glb|gltf|bin|jpg|jpeg|png|webp|ktx2|hdr)$ {
+        add_header Access-Control-Allow-Origin *;
+        expires max;
+        access_log off;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+# api.andrewslearning.com
+server {
+    listen 80;
+    server_name api.andrewslearning.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name api.andrewslearning.com;
+
+    ssl_certificate /etc/letsencrypt/live/api.andrewslearning.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.andrewslearning.com/privkey.pem;
+
+    client_max_body_size 100M;
+
+    location /ws/ {
+        proxy_pass http://127.0.0.1:8001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+
+    location /wschat/ {
+        proxy_pass http://127.0.0.1:8003;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+
+    location / {
+        proxy_pass http://unix:/home/ab/djangoblunderfolder/andrewslearningbackend/andrewslearningbackend.sock;
+        include proxy_params;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+
+# thestemcenter.org
+server {
+    listen 80;
+    server_name thestemcenter.org www.thestemcenter.org;
+    return 301 https://thestemcenter.org$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name www.thestemcenter.org;
+    ssl_certificate /etc/letsencrypt/live/thestemcenter.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/thestemcenter.org/privkey.pem;
+    return 301 https://thestemcenter.org$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name thestemcenter.org;
+
+    ssl_certificate /etc/letsencrypt/live/thestemcenter.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/thestemcenter.org/privkey.pem;
+
+    root /var/www/136.55.166.151;
+    index index.html;
+
+    add_header Content-Security-Policy "default-src https: data: 'unsafe-inline' 'unsafe-eval'; connect-src https: wss://api.andrewslearning.com;" always;
+
+    location ~* \.(glb|gltf|bin|jpg|jpeg|png|webp|ktx2|hdr)$ {
+        add_header Access-Control-Allow-Origin *;
+        expires max;
+        access_log off;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+# jenkins.andrewslearning.com
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name jenkins.andrewslearning.com;
+    ssl_certificate /etc/letsencrypt/live/jenkins.andrewslearning.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/jenkins.andrewslearning.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /github-webhook/ {
+        proxy_pass http://127.0.0.1:8080/github-webhook/;
+        proxy_redirect off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# gangelee.com
+server {
+    listen 80;
+    server_name gangelee.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name gangelee.com www.gangelee.com;
+
+    ssl_certificate /etc/letsencrypt/live/gangelee.com-0001/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/gangelee.com-0001/privkey.pem;
+
+    root /var/www/gangelee;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+# api.gangelee.com
+server {
+    listen 80;
+    server_name api.gangelee.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name api.gangelee.com;
+
+    ssl_certificate /etc/letsencrypt/live/api.gangelee.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.gangelee.com/privkey.pem;
+
+    client_max_body_size 100M;
+
+    location / {
+        include proxy_params;
+        proxy_pass http://unix:/home/ab/gangelee/Gangelee/formulator.sock;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# menteecollege.com
+server {
+    listen 80;
+    server_name api.menteecollege.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name api.menteecollege.com;
+    ssl_certificate /etc/letsencrypt/live/api.menteecollege.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.menteecollege.com/privkey.pem;
+    client_max_body_size 100M;
+
+    location / {
+        include proxy_params;
+        proxy_pass http://unix:/home/ab/menteeCollegePortal/menteecollegewebsite/nursesexpress.sock;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /ws/ {
+        proxy_pass http://127.0.0.1:8002;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+}
+
+server {
+    listen 80;
+    server_name www.menteecollege.com;
+    return 301 https://menteecollege.com$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name www.menteecollege.com;
+    ssl_certificate /etc/letsencrypt/live/www.menteecollege.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/www.menteecollege.com/privkey.pem;
+    return 301 https://menteecollege.com$request_uri;
+}
+
+server {
+    listen 80;
+    server_name menteecollege.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name menteecollege.com;
+    ssl_certificate /etc/letsencrypt/live/menteecollege.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/menteecollege.com/privkey.pem;
+
+    root /var/www/MenteeCollege;
+    index index.html;
+
+    add_header Content-Security-Policy "default-src https: data: 'unsafe-inline' 'unsafe-eval'; connect-src https: wss://api.menteecollege.com;" always;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+# nursesandcompanions.com
+server {
+    listen 80;
+    server_name www.nursesandcompanions.com;
+    return 301 https://nursesandcompanions.com$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name www.nursesandcompanions.com;
+    ssl_certificate /etc/letsencrypt/live/nursesandcompanions.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/nursesandcompanions.com/privkey.pem;
+    return 301 https://nursesandcompanions.com$request_uri;
+}
+
+server {
+    listen 80;
+    server_name nursesandcompanions.com;
+    return 301 https://nursesandcompanions.com$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name nursesandcompanions.com;
+    ssl_certificate /etc/letsencrypt/live/nursesandcompanions.com-0001/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/nursesandcompanions.com-0001/privkey.pem;
+
+    root /var/www/nursesandcompanions;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+# andrewbrowne.org
+server {
+    listen 80;
+    server_name andrewbrowne.org www.andrewbrowne.org;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name andrewbrowne.org www.andrewbrowne.org;
+
+    ssl_certificate /etc/letsencrypt/live/andrewbrowne.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/andrewbrowne.org/privkey.pem;
+
+    root /var/www/portfolio;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    error_page 404 /404.html;
+    location = /404.html {
+        internal;
+    }
+
+    error_page 500 502 503 504 /50x.html;
+    location = /50x.html {
+        internal;
+    }
+}
+

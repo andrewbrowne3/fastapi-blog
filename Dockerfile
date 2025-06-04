@@ -6,8 +6,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
-COPY blog_fastapi.py .
+# Copy all application files
+COPY . .
+
+# Ensure .env is copied (in case .dockerignore excludes it)
 COPY .env .
 
 # Create checkpoints directory
@@ -18,7 +20,8 @@ EXPOSE 4000
 
 # Set environment variables for production
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
 # Set very long timeouts to handle ReAct processing
-CMD ["uvicorn", "blog_fastapi:app", "--host", "0.0.0.0", "--port", "4000", "--timeout-keep-alive", "7200", "--timeout-graceful-shutdown", "7200", "--workers", "1"]
+CMD ["uvicorn", "main_with_db:app", "--host", "0.0.0.0", "--port", "4000", "--timeout-keep-alive", "7200", "--timeout-graceful-shutdown", "7200", "--workers", "1"]
 
