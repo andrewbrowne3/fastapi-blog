@@ -18,7 +18,7 @@ class Database:
             self.connection_pool = psycopg2.pool.SimpleConnectionPool(
                 1, 20,  # min and max connections
                 host=os.getenv("DB_HOST", "localhost"),
-                database=os.getenv("DB_NAME", "blog_db"),
+                database=os.getenv("DB_NAME", "blog_agent_db"),
                 user=os.getenv("DB_USER", "postgres"),
                 password=os.getenv("DB_PASSWORD", "password"),
                 port=os.getenv("DB_PORT", "5432"),

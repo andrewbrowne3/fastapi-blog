@@ -1,18 +1,40 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: blog_checkpoints
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-EXEC", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
   fastapi-blog:
     build: .
     ports:
-      - "7999:7999"
+      - "4000:4000"
     environment:
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/blog_checkpoints
       - TAVILY_API_KEY=${TAVILY_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
-      - ./checkpoints:/app/checkpoints
       - ./storage:/app/storage
     restart: unless-stopped
-    depends_on: []
-    # Using network_mode: host means the container uses the host's network
-    # So it can access Ollama on localhost:11434 directly 
+    # Use host network to access Ollama on localhost:11434
+    network_mode: host
+
+volumes:
+  postgres_data: 

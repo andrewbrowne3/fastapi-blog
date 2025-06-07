@@ -9,6 +9,8 @@ import os
 import requests
 import sqlite3
 from datetime import datetime
+import base64
+from openai import OpenAI
 
 # Import the actual blog generation functionality
 import sys
@@ -23,6 +25,14 @@ router = APIRouter(prefix="/blog", tags=["blog"])
 
 # Create the graph instance for blog generation
 graph = create_blog_graph()
+
+# Initialize OpenAI client
+openai_client = None
+try:
+    openai_client = OpenAI()  # Uses OPENAI_API_KEY from environment
+    print("✅ OpenAI client initialized successfully")
+except Exception as e:
+    print(f"❌ OpenAI client initialization failed: {e}")
 
 # Pydantic models (these should eventually be moved to schemas)
 class ReActState(BaseModel):
@@ -225,9 +235,303 @@ def delete_saved_blog(blog_id: int) -> bool:
     conn.close()
     return success
 
-# Note: The actual implementation functions (get_llm, create_blog_graph, etc.) 
-# would need to be imported from the main blog_fastapi.py file or moved to separate modules
-# For now, I'll create placeholder endpoints that reference the main functionality
+# Analyze content for relevant images using OpenAI
+def analyze_content_for_images(content: str, section_title: str = "") -> List[ImageSuggestion]:
+    """
+    Deeply analyze blog content and suggest highly relevant images with contextual DALL-E prompts
+    """
+    try:
+        # Use OpenAI for sophisticated content analysis
+        client = OpenAI()  # Uses OPENAI_API_KEY from environment
+        
+        # Enhanced analysis prompt for better context understanding
+        analysis_prompt = f"""
+        You are an expert content analyst and visual designer. Analyze this blog content deeply to suggest highly relevant, contextual images.
+
+        BLOG CONTENT:
+        {content}
+
+        SECTION TITLE (if specific section): {section_title}
+
+        ANALYSIS REQUIREMENTS:
+        1. Extract key themes, concepts, and specific topics discussed
+        2. Identify concrete examples, case studies, or scenarios mentioned
+        3. Note the target audience and tone of the content
+        4. Consider what visual elements would best support comprehension
+        5. Think about what would engage readers and enhance understanding
+
+        For each image suggestion, create:
+        - A detailed, contextual DALL-E prompt that directly relates to the content
+        - Include specific visual elements that reflect the actual topics discussed
+        - Consider the tone (professional, casual, technical, etc.)
+        - Specify composition, style, colors that match the content theme
+        - Make it relevant to the specific concepts, not just generic
+
+        EXAMPLE OF GOOD vs BAD:
+        BAD: "A professional illustration about technology"
+        GOOD: "A detailed illustration showing a healthcare professional using an AI diagnostic tool on a tablet, with patient data visualizations and medical charts in the background, modern hospital setting, clean blue and white color scheme, professional medical photography style"
+
+        Respond in this exact JSON format:
+        {{
+            "suggestions": [
+                {{
+                    "prompt": "highly detailed, contextual DALL-E prompt that directly relates to specific content discussed",
+                    "description": "specific description of what this image shows and why it's relevant",
+                    "placement": "header|section|inline",
+                    "relevance_score": 0.9,
+                    "key_concepts": ["concept1", "concept2", "concept3"]
+                }}
+            ]
+        }}
+
+        Generate 2-3 suggestions that are HIGHLY SPECIFIC to the actual content discussed.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4",  # Use GPT-4 for better analysis
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "You are an expert content analyst and visual designer who creates highly contextual, relevant image suggestions. You deeply understand content themes and create specific, targeted DALL-E prompts that directly support the written material."
+                },
+                {"role": "user", "content": analysis_prompt}
+            ],
+            temperature=0.3,  # Lower temperature for more focused analysis
+            max_tokens=1500
+        )
+        
+        # Parse the JSON response
+        result = json.loads(response.choices[0].message.content)
+        
+        suggestions = []
+        for item in result.get("suggestions", []):
+            suggestions.append(ImageSuggestion(
+                prompt=item["prompt"],
+                description=item["description"],
+                placement=item["placement"]
+            ))
+        
+        return suggestions
+        
+    except Exception as e:
+        print(f"Error in enhanced content analysis: {e}")
+        # Return contextual fallback based on content keywords
+        return create_fallback_suggestions(content, section_title)
+
+def create_fallback_suggestions(content: str, section_title: str = "") -> List[ImageSuggestion]:
+    """
+    Create fallback image suggestions based on keyword analysis when AI analysis fails
+    """
+    # Extract key terms and themes from content
+    content_lower = content.lower()
+    
+    # Define theme-based prompts
+    themes = {
+        'ai': "A sophisticated AI neural network visualization with glowing nodes and connections, futuristic blue and purple color scheme, high-tech digital art style",
+        'healthcare': "Modern healthcare professionals collaborating with digital technology, clean medical environment, professional photography style with soft lighting",
+        'business': "Professional business team in a modern office environment, collaborative workspace, natural lighting, corporate photography style",
+        'technology': "Cutting-edge technology interface with holographic displays and data visualizations, sleek modern design, blue and white color palette",
+        'education': "Diverse students engaged in interactive learning with digital tools, bright classroom environment, educational photography style",
+        'finance': "Financial data visualization with charts and graphs on modern displays, professional trading floor atmosphere, blue and green color scheme",
+        'environment': "Sustainable technology and green energy solutions, solar panels and wind turbines, natural landscape, environmental photography",
+        'food': "Fresh, healthy ingredients artfully arranged, natural lighting, food photography style with vibrant colors",
+        'travel': "Scenic destination with cultural landmarks, golden hour lighting, travel photography style with rich colors",
+        'fitness': "Active lifestyle with modern fitness equipment, energetic atmosphere, sports photography with dynamic lighting"
+    }
+    
+    # Find matching themes
+    detected_themes = []
+    for theme, prompt in themes.items():
+        if theme in content_lower or any(keyword in content_lower for keyword in [theme + 's', theme + 'ing']):
+            detected_themes.append((theme, prompt))
+    
+    # Create suggestions based on detected themes
+    suggestions = []
+    if detected_themes:
+        for i, (theme, prompt) in enumerate(detected_themes[:2]):
+            suggestions.append(ImageSuggestion(
+                prompt=f"{prompt}, related to {section_title if section_title else 'the main topic'}, high quality, detailed",
+                description=f"Contextual illustration related to {theme} and the content discussed",
+                placement="section" if i == 0 else "inline"
+            ))
+    else:
+        # Generic but contextual fallback
+        suggestions.append(ImageSuggestion(
+            prompt=f"Professional illustration representing the concepts discussed in '{section_title if section_title else 'this content'}', modern design, clean composition, relevant visual metaphors, high quality",
+            description="Conceptual illustration supporting the main ideas",
+            placement="header"
+        ))
+    
+    return suggestions
+
+# Generate image using DALL-E
+def generate_image_with_dalle(prompt: str, size: str = "1024x1024") -> Dict[str, Any]:
+    """
+    Generate an image using DALL-E based on the provided prompt
+    """
+    try:
+        response = openai_client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size=size,
+            quality="standard",
+            n=1,
+        )
+        
+        image_url = response.data[0].url
+        
+        return {
+            "success": True,
+            "image": {
+                "url": image_url,
+                "prompt": prompt,
+                "size": size
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error generating image: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+# Download and encode image as base64
+def download_and_encode_image(image_url: str) -> str:
+    """
+    Download an image from URL and encode it as base64
+    """
+    try:
+        response = requests.get(image_url)
+        response.raise_for_status()
+        
+        # Encode as base64
+        image_base64 = base64.b64encode(response.content).decode('utf-8')
+        return f"data:image/png;base64,{image_base64}"
+        
+    except Exception as e:
+        print(f"Error downloading image: {e}")
+        return ""
+
+# Google Images Search Functions
+def search_google_images(query: str, num_results: int = 10) -> GoogleImageSearchResponse:
+    """
+    Search for images using Google Custom Search API
+    """
+    try:
+        # Get API credentials from environment
+        api_key = os.getenv("GOOGLE_API_KEY")
+        search_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
+        
+        if not api_key or not search_engine_id:
+            raise HTTPException(
+                status_code=500, 
+                detail="Google API credentials not configured. Please set GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID environment variables."
+            )
+        
+        # Google Custom Search API endpoint
+        url = "https://www.googleapis.com/customsearch/v1"
+        
+        params = {
+            "key": api_key,
+            "cx": search_engine_id,
+            "q": query,
+            "searchType": "image",
+            "num": min(num_results, 10),  # Google API limits to 10 results per request
+            "safe": "active",
+            "imgSize": "medium",
+            "imgType": "photo"
+        }
+        
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        results = []
+        items = data.get("items", [])
+        
+        for item in items:
+            # Extract image information
+            image_result = GoogleImageResult(
+                title=item.get("title", ""),
+                link=item.get("link", ""),
+                thumbnail=item.get("image", {}).get("thumbnailLink", ""),
+                width=item.get("image", {}).get("width", 0),
+                height=item.get("image", {}).get("height", 0),
+                source=item.get("displayLink", "")
+            )
+            results.append(image_result)
+        
+        return GoogleImageSearchResponse(
+            query=query,
+            results=results,
+            total_results=len(results)
+        )
+        
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Google API request failed: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error searching Google Images: {str(e)}")
+
+def generate_smart_image_query(content: str, section_title: str = "") -> str:
+    """
+    Generate an optimized search query for images based on content and section title
+    """
+    try:
+        # Use OpenAI to generate a smart search query
+        if openai_client:
+            prompt = f"""
+            Based on this blog content and section title, generate a concise, effective Google Images search query (2-4 words max) that would find the most relevant, professional images.
+
+            Section Title: {section_title}
+            Content: {content[:500]}...
+
+            Focus on:
+            - Key concepts and themes
+            - Visual elements that would enhance understanding
+            - Professional, high-quality imagery
+            - Avoid overly specific or niche terms
+
+            Return only the search query, nothing else.
+            """
+            
+            response = openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are an expert at creating effective image search queries. Generate concise, professional search terms."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=50,
+                temperature=0.3
+            )
+            
+            query = response.choices[0].message.content.strip().strip('"').strip("'")
+            return query
+        else:
+            # Fallback: extract key terms from section title and content
+            import re
+            
+            # Combine section title and content
+            text = f"{section_title} {content}".lower()
+            
+            # Remove common words and extract meaningful terms
+            stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those'}
+            
+            # Extract words (alphanumeric only)
+            words = re.findall(r'\b[a-zA-Z]{3,}\b', text)
+            meaningful_words = [word for word in words if word not in stop_words]
+            
+            # Take first 2-3 most relevant words
+            if meaningful_words:
+                return ' '.join(meaningful_words[:3])
+            else:
+                return section_title or "professional business"
+                
+    except Exception as e:
+        print(f"Error generating smart query: {e}")
+        # Fallback to section title or generic term
+        return section_title or "professional business"
 
 @router.post("/")
 def generate_blog(request: BlogRequest):
@@ -446,137 +750,120 @@ def get_blog_history(thread_id: str):
 
 @router.post("/suggest-images")
 async def suggest_images(request: ImageRequest):
-    """Suggest images for blog content"""
-    return {
-        "message": "Image suggestion endpoint",
-        "request": request.dict()
-    }
+    """
+    Analyze content and suggest relevant images
+    """
+    try:
+        # Use OpenAI directly instead of passing LLM
+        suggestions = analyze_content_for_images(request.content, request.section_title)
+        
+        return {
+            "success": True,
+            "suggestions": [
+                {
+                    "prompt": s.prompt,
+                    "description": s.description,
+                    "placement": s.placement
+                }
+                for s in suggestions
+            ]
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error suggesting images: {str(e)}")
 
 @router.post("/generate-image")
 async def generate_image(request: ImageRequest):
-    """Generate image using DALL-E"""
-    return {
-        "message": "Image generation endpoint",
-        "request": request.dict()
-    }
+    """
+    Generate an image based on deep content analysis and user preferences
+    """
+    try:
+        # First analyze the content to get contextual suggestions
+        suggestions = analyze_content_for_images(request.content, request.section_title)
+        
+        # Use the best suggestion as base, or create enhanced prompt
+        if suggestions:
+            base_prompt = suggestions[0].prompt
+        else:
+            # Fallback: create contextual prompt from content and section
+            base_prompt = f"Professional illustration related to {request.section_title if request.section_title else 'the main topic'}"
+        
+        # Enhance the prompt with style preferences and ensure quality
+        style_enhancements = {
+            "professional": "clean, corporate, modern design, high quality, detailed",
+            "creative": "artistic, imaginative, vibrant colors, creative composition, high quality",
+            "minimalist": "clean, simple, minimal design, elegant, high quality",
+            "technical": "detailed, precise, technical illustration, informative, high quality",
+            "friendly": "warm, approachable, inviting, colorful, high quality",
+            "modern": "contemporary, sleek, cutting-edge design, high quality"
+        }
+        
+        style_addition = style_enhancements.get(request.style, "professional, high quality, detailed")
+        
+        # Create the final enhanced prompt
+        if request.section_title:
+            enhanced_prompt = f"{base_prompt}, specifically for section about '{request.section_title}', {style_addition}"
+        else:
+            enhanced_prompt = f"{base_prompt}, {style_addition}"
+        
+        # Ensure prompt is not too long (DALL-E has limits)
+        if len(enhanced_prompt) > 400:
+            enhanced_prompt = enhanced_prompt[:400] + "..."
+        
+        print(f"Generated contextual DALL-E prompt: {enhanced_prompt}")
+        
+        # Generate image
+        result = generate_image_with_dalle(enhanced_prompt, request.size)
+        
+        if not result["success"]:
+            raise HTTPException(status_code=500, detail=f"Image generation failed: {result['error']}")
+        
+        # Download and encode the image
+        base64_image = download_and_encode_image(result["image"]["url"])
+        
+        return {
+            "success": True,
+            "image": result["image"],
+            "base64_image": base64_image,
+            "enhanced_prompt": enhanced_prompt,  # Return the enhanced prompt for debugging
+            "section_title": request.section_title
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating image: {str(e)}")
 
-def search_google_images(query: str, num_results: int = 10) -> Dict[str, Any]:
+@router.post("/search-google-images")
+async def search_google_images_endpoint(request: GoogleImageSearchRequest):
     """
     Search for images using Google Custom Search API
     """
     try:
-        # Get API credentials from environment
-        api_key = os.getenv("GOOGLE_API_KEY")
-        search_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
-        
-        if not api_key or not search_engine_id:
-            raise HTTPException(
-                status_code=500, 
-                detail="Google API credentials not configured. Please set GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID environment variables."
-            )
-        
-        # Google Custom Search API endpoint
-        url = "https://www.googleapis.com/customsearch/v1"
-        
-        params = {
-            "key": api_key,
-            "cx": search_engine_id,
-            "q": query,
-            "searchType": "image",
-            "num": min(num_results, 10),  # Google API limits to 10 results per request
-            "safe": "active",
-            "imgSize": "medium",
-            "imgType": "photo"
-        }
-        
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        
-        data = response.json()
-        
-        results = []
-        items = data.get("items", [])
-        
-        for item in items:
-            # Extract image information
-            image_result = {
-                "title": item.get("title", ""),
-                "link": item.get("link", ""),
-                "thumbnail": item.get("image", {}).get("thumbnailLink", ""),
-                "width": item.get("image", {}).get("width", 0),
-                "height": item.get("image", {}).get("height", 0),
-                "source": item.get("displayLink", "")
-            }
-            results.append(image_result)
-        
-        return {
-            "query": query,
-            "results": results,
-            "total_results": len(results)
-        }
-        
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Google API request failed: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error searching Google Images: {str(e)}")
-
-def generate_smart_image_query(content: str, section_title: str = "") -> str:
-    """
-    Generate an optimized search query for images based on content and section title
-    """
-    try:
-        # Fallback: extract key terms from section title and content
-        import re
-        
-        # Combine section title and content
-        text = f"{section_title} {content}".lower()
-        
-        # Remove common words and extract meaningful terms
-        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those'}
-        
-        # Extract words (alphanumeric only)
-        words = re.findall(r'\b[a-zA-Z]{3,}\b', text)
-        meaningful_words = [word for word in words if word not in stop_words]
-        
-        # Take first 2-3 most relevant words
-        if meaningful_words:
-            return ' '.join(meaningful_words[:3])
-        else:
-            return section_title or "professional business"
-            
-    except Exception as e:
-        print(f"Error generating smart query: {e}")
-        # Fallback to section title or generic term
-        return section_title or "professional business"
-
-@router.post("/search-google-images")
-async def search_google_images_endpoint(request: GoogleImageSearchRequest):
-    """Search Google Images"""
-    try:
         result = search_google_images(request.query, request.num_results)
         return {
             "success": True,
-            "query": result["query"],
+            "query": result.query,
             "results": [
                 {
                     "id": f"google-{i}",
-                    "title": img["title"],
-                    "link": img["link"],
-                    "thumbnail": img["thumbnail"],
-                    "width": img["width"],
-                    "height": img["height"],
-                    "source": img["source"]
+                    "title": img.title,
+                    "link": img.link,
+                    "thumbnail": img.thumbnail,
+                    "width": img.width,
+                    "height": img.height,
+                    "source": img.source
                 }
-                for i, img in enumerate(result["results"])
+                for i, img in enumerate(result.results)
             ],
-            "total_results": result["total_results"]
+            "total_results": result.total_results
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error searching Google Images: {str(e)}")
 
 @router.post("/search-images-for-sections")
 async def search_images_for_sections(request: GoogleImageSectionRequest):
-    """Search images for multiple blog sections"""
+    """
+    Search for images for multiple blog sections automatically
+    """
     try:
         results = {}
         
@@ -596,16 +883,16 @@ async def search_images_for_sections(request: GoogleImageSectionRequest):
                     "images": [
                         {
                             "id": f"google-{section_title}-{i}",
-                            "title": img["title"],
-                            "link": img["link"],
-                            "thumbnail": img["thumbnail"],
-                            "width": img["width"],
-                            "height": img["height"],
-                            "source": img["source"]
+                            "title": img.title,
+                            "link": img.link,
+                            "thumbnail": img.thumbnail,
+                            "width": img.width,
+                            "height": img.height,
+                            "source": img.source
                         }
-                        for i, img in enumerate(search_result["results"])
+                        for i, img in enumerate(search_result.results)
                     ],
-                    "total_results": search_result["total_results"]
+                    "total_results": search_result.total_results
                 }
                 
             except Exception as section_error:

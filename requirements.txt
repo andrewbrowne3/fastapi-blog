@@ -88,7 +88,7 @@ langchain-text-splitters==0.3.8
 langcodes==3.5.0
 langgraph==0.4.3
 langgraph-checkpoint==2.0.25
-langgraph-checkpoint-sqlite==2.0.10
+langgraph-checkpoint-postgres==2.0.20
 langgraph-prebuilt==0.1.8
 langgraph-sdk==0.1.69
 langsmith==0.3.42
